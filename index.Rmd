@@ -1,0 +1,217 @@
+---
+title: "Machine Learning HAR"
+author: "Ken Duffau"
+date: "October 8, 2016"
+output: html_document
+---
+
+#Executive Summary
+The Human Activity Recognition (HAR) Weightlifting Exercise dataset contains 19622 observations, with 160 variables, of six human subjects performing standard curls. The objective of the original study was to determine if the researchers could identify measurements that determined whether an exercise iteration was performed correctly. The researchers developed five classes from the measurements with Class A notated as a correctly performed iteration. The calculated measures were derived from features on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings. For the Euler angles of each of the four sensors they calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness. We developed several machine learning models to predict how exercises would be performed in a test set of 20 observations, and after significant cleaning and evaluating seven separate models, we determined that R's Caret package "rf" method with 5-fold cross-validation returned the highest accuracy (99.8%). It was noticeable however that the standalone randomForest package was much quicker in fitting the model and the accuracy was "close enough (99.6%)" that we found the latter package to be equally acceptable.
+
+```{r echo=FALSE, results="hide", message = FALSE}
+# Download Weightlift Exercise data test and train csv files to working directory
+if(!file.exists("./Data")){dir.create("./Data")}
+destfile1="./trainData.csv"
+if (!file.exists(destfile1)) {
+    fileURL1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"   
+    download.file(fileURL1 ,destfile1) }
+destfile2="./testData.csv"
+if (!file.exists(destfile2)) {
+    fileURL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"   
+    download.file(fileURL2 ,destfile2) }
+
+# Load train and test data into data frames
+wlTrain <- read.csv("trainData.csv", stringsAsFactors = FALSE)
+wlTest <- read.csv("testData.csv", stringsAsFactors = FALSE)
+
+# Load required libraries
+library(caret)
+library(rpart)
+library(randomForest)
+library(rattle)
+library(rpart.plot)
+library(ggplot2)
+library(gbm)
+```
+
+##Analysis Approach
+#Data Preparation
+
+We started with simple exploration of the dataset and quickly identified many variables with a predominance of NA values. Despite identifying only 406 complete cases we determined that we should try to maximize the number of training observations. Instead of filtering on complete cases, we elected to remove all variables that contained more than 70% of NA values. Interestingly, this resulted in a dataset of 60 variables but with 100% complete cases. We also removed the dataset index values (X) after discovering that our decision tree model used them as the split variable. We used the variable importance (varImp) function throughout our testing to continue to identify variables that were, we felt, unduly influencing model results. In some cases, particularly with the random forest model runs, the varImp function returned timestamp values that had appended measurements, so we removed all timestamp values as well. We finally settled on a training set of 19622 observations using 55 variables. All of the variables that we removed from the training set were also removed from the test set.
+```{r echo=FALSE, results="hide"}
+str(wlTrain)
+sum(complete.cases(wlTrain))
+
+# Pare down variable list by checking for colinearity and removing the index value
+colinCheck <- nearZeroVar(wlTrain, names = TRUE)
+colinCheck
+# Actually do it
+trimNZVTrain <- wlTrain[,!(colnames(wlTrain) %in% colinCheck)]
+trimNZVTest <- wlTest[,!(colnames(wlTest) %in% colinCheck)]
+# Remove other variables that are affecting the model
+trimIdxTrain <- trimNZVTrain[,-1]
+trimIdxTest <- trimNZVTest[,-1]
+timeStamp <- grep("stamp", names(trimIdxTrain), value = TRUE)
+trimStampTrain <- trimIdxTrain[,!(colnames(trimIdxTrain) %in% timeStamp)]
+trimStampTest <- trimIdxTest[,!(colnames(trimIdxTest) %in% timeStamp)]
+
+# subset to variables that are no more than 70% NA
+excessNA <- names(trimStampTrain[, colSums(is.na(trimStampTrain)) < nrow(trimStampTrain) * 0.7])
+wlTrainFinal <- trimStampTrain[,colnames(trimStampTrain) %in% excessNA]
+wlTestFinal <- trimStampTest[,colnames(trimStampTest) %in% excessNA]
+```
+
+#Data Partitioning
+We randomly divided our training set on the classe variable using 80% for training and reserving 20% for testing (this ultimately made the provided "test" set our validation set).
+```{r echo=FALSE, results="hide"}
+# very little data in test. Partition training set and use test set for validation.
+set.seed(12333)
+inTrain <- createDataPartition(wlTrainFinal$classe, p = 0.8, list = FALSE)
+training <- wlTrainFinal[inTrain,]
+testing <- wlTrainFinal[-inTrain,]
+```
+#Model Selection
+Because this exercise was a 5-level classification problem, we focused our model selection on decision trees, random forests, and finally a gradient boosted model. For the decision tree and random forest models we ran three separate models each:
+
+* Caret package method (no cross validation)
+
+* Caret package method (5-fold cross validation)
+
+* The standalone R packages (rpart and randomForest)
+
+We only elected to run the Caret package's "gbm" method, with no cross validation.
+
+```{r echo = FALSE, results="hide", message = FALSE, fig.keep='none'}
+# Fit Decision Tree w/ train() function rpart method
+#modFitDT <- train(classe ~ ., method = "rpart", data = training)
+load(file = "MLmodFitDT.rda")
+# Print results
+modFitDT
+
+# Predict on test set
+predTestDT <- predict(modFitDT, testing)
+table(predTestDT)
+confusionMatrix(predTestDT, testing$classe)
+
+# Predict on validation
+predValDT <- predict(modFitDT, wlTestFinal)
+table(predValDT)
+
+# Use rpart
+# modFitRpart <- rpart(classe ~ ., data = training)
+load(file = "MLmodFitRpart.rda")
+modFitRpart
+fancyRpartPlot(modFitRpart)
+predRPart <- predict(modFitRpart, testing, type = "class")
+table(predRPart)
+confusionMatrix(predRPart, testing$classe)
+
+# Predict on validation
+predValRpart <- predict(modFitRpart, wlTestFinal, type = "class")
+table(predValRpart)
+
+# Train without partitioning
+# modFitDTCV <- train(classe ~ ., method = "rpart", data = wlTrainFinal, trControl = trainControl(method = "cv", number = 5))
+load(file = "MLmodFitDTCV.rda")
+modFitDTCV
+
+#Predict on test
+predTestDTCV <- predict(modFitDTCV, wlTestFinal)
+table(predTestDTCV)
+
+# Train with partitioning using Random Forest & print results
+# modFitRF <- train(classe ~ ., method = "rf", data = training)
+load(file = "MLmodFitRF.rda")
+modFitRF
+# Predict on test
+predTestRF <- predict(modFitRF, testing)
+table(predTestRF)
+confusionMatrix(predTestRF, testing$classe)
+
+# Predict on validation
+predValRF <- predict(modFitRF, wlTestFinal)
+table(predValRF)
+
+# Train with random forest function
+training$user_name <- factor(training$user_name)
+testing$user_name <- factor(testing$user_name)
+# modFitRdmFor <- randomForest(as.factor(classe) ~ ., data = training)
+load(file = "MLmodFitRdmFor.rda")
+modFitRdmFor
+# Predict on test
+predTestRdmFor <- predict(modFitRdmFor, testing)
+table(predTestRdmFor)
+confusionMatrix(predTestRdmFor, testing$classe)
+# Predict on validation
+training$user_name <- factor(training$user_name)
+wlTestFinal$user_name <- factor(wlTestFinal$user_name)
+predValRdmFor <- predict(modFitRdmFor, wlTestFinal)
+table(predValRdmFor)
+# Reset variables
+training$user_name <- as.character(training$user_name)
+testing$user_name <- as.character(testing$user_name)
+wlTestFinal$user_name <- as.character(wlTestFinal$user_name)
+
+# Train without partitioning
+# modFitRFCV <- train(classe ~ ., method = "rf", data = wlTrainFinal, trControl = trainControl(method = "cv", number = 5))
+load(file = "MLmodFitRFCV.rda")
+modFitRFCV
+
+# Predict on test
+predTestRFCV <- predict(modFitRFCV, wlTestFinal)
+table(predTestRFCV)
+
+# Train with partitioning using Random Forest & print results
+# modFitGBM <- train(classe ~ ., method = "gbm", data = training, verbose = FALSE)
+load(file = "MLmodFitGBM.rda")
+modFitGBM
+# Predict on test
+predTestGBM <- predict(modFitGBM, testing)
+table(predTestGBM)
+confusionMatrix(predTestGBM, testing$classe)
+
+# Predict on Validation
+predValGBM <- predict(modFitGBM, wlTestFinal)
+table(predValGBM)
+```
+
+##Results
+Our first model was Caret's rpart method which failed to produce any leafs representing Classes B and D as well as finishing with what would ultimately be the lowest accuracy (43%). Since we didn't anticipate significant improvement, we next evaluated the standalone rPart package and the results were significantly better with an accuracy of 71.6% and all classes represented. However, this model assigned zero importance to many variables, including most of the gyroscope features. Despite this, we were pleased with the improvements and were comfortable with the depth of the overall tree.
+
+```{r echo = FALSE, warnings = FALSE}
+fancyRpartPlot(modFitRpart)
+```
+
+We then began evaluating Random Forest models (which proved in the case of Caret to be computationally expensive and extremely time consuming). Both the Caret and standalone Random Forest models performed extremely well. In fact, their accuracies were identical at 99.6% and while their total misclassifications were identical (14 each), there were differences in which observations were misclassified (but both models erred the most with Classes C and D). Finally both models predicted the same results for our holdout validation set (the 20 original test observations).
+
+Though we were satisfied with our Random Forest models, we continued our evaluation with Caret's "gbm" method, which returned only slightly less accuracy (98.9%). That model also returned the same results for the validation set.
+```{r echo = FALSE, warnings = FALSE}
+table(predValGBM)
+```
+
+Our final tests were designed to add cross validation to the entire training set with the "rpart" and "rf" methods of the Caret package. Cross validation improved the decision tree accuracy results (56.2%), but failed to place any observations in three of the five classes (B, D and E) and we rejected it. The cross validation with Caret's "rf" method actually outperformed the other two Random Forest models, though only slightly with an overall accuracy of 99.8%. This model, too, returned the same predictions against the validation set as the Random Forest and Gradient Boosted Models.
+
+The overall results are graphically represented below:
+```{r echo=FALSE, results="hide", message = FALSE}
+# Stage data and plot accuracy results
+accuracyDT <- round(confusionMatrix(predTestDT, testing$classe)$overall[[1]], 5)
+accuracyRPart <- round(confusionMatrix(predRPart, testing$classe)$overall[[1]], 5)
+accuracyDTCV <- round(modFitDTCV$results[1,2], 5)
+accuracyRF <- round(confusionMatrix(predTestRF, testing$classe)$overall[[1]], 5)
+accuracyRdmFor <- round(confusionMatrix(predTestRdmFor, testing$classe)$overall[[1]], 5)
+accuracyRFCV <- round(modFitRFCV$results[2,2], 5)
+accuracyGBM <- round(confusionMatrix(predTestGBM, testing$classe)$overall[[1]], 5)
+accStats <- c(accuracyDT, accuracyRPart, accuracyDTCV, accuracyRF, accuracyRdmFor, accuracyRFCV, accuracyGBM)
+modelData <- data.frame(matrix(data = accStats, nrow = 7, ncol = 1))
+rownames(modelData) <- c("DecTree", "Rpart", "DecTreeCV", "RF(caret)", "RF", "RF(Caret)CV", "GBM")
+names(modelData) <- c("Accuracy")
+modelData
+g <- ggplot(modelData, aes(x = rownames(modelData), y = Accuracy)) +
+     geom_bar(stat = "identity", col = "blue", fill = "white") +
+     geom_text(aes(label = Accuracy), vjust = 1.6, color = "blue", size = 5.5)
+g
+## End Script
+```
+
+##Assumptions, Uncertainty, and Conclusion
+We are comfortable with our selection of the cross-validated Random Forest model as the best performer, but unlike the models run against the training data's test partition, we were unable to explore the results in a confusion matrix. Still, given the consistent predictions on the validation sets between all three Random Forest models and the Gradient Boosted Model, we feel that if nothing else our models are consistent. Admittedly, we did little customization and wherever possible, relied on the default model methods. Our unfamiliarity with the dataset variables is also cause for concern. Our variable importance checks for all our models put the most importance on the "num_window" variable, which we suspect could be safely removed from the dataset. For this exercise we chose to let it remain.
