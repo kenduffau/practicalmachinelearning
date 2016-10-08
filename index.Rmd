@@ -38,7 +38,7 @@ library(gbm)
 #Data Preparation
 
 We started with simple exploration of the dataset and quickly identified many variables with a predominance of NA values. Despite identifying only 406 complete cases we determined that we should try to maximize the number of training observations. Instead of filtering on complete cases, we elected to remove all variables that contained more than 70% of NA values. Interestingly, this resulted in a dataset of 60 variables but with 100% complete cases. We also removed the dataset index values (X) after discovering that our decision tree model used them as the split variable. We used the variable importance (varImp) function throughout our testing to continue to identify variables that were, we felt, unduly influencing model results. In some cases, particularly with the random forest model runs, the varImp function returned timestamp values that had appended measurements, so we removed all timestamp values as well. We finally settled on a training set of 19622 observations using 55 variables. All of the variables that we removed from the training set were also removed from the test set.
-```{r echo=FALSE, results="hide"}
+```{r results="hide"}
 str(wlTrain)
 sum(complete.cases(wlTrain))
 
@@ -63,7 +63,7 @@ wlTestFinal <- trimStampTest[,colnames(trimStampTest) %in% excessNA]
 
 #Data Partitioning
 We randomly divided our training set on the classe variable using 80% for training and reserving 20% for testing (this ultimately made the provided "test" set our validation set).
-```{r echo=FALSE, results="hide"}
+```{r results="hide"}
 # very little data in test. Partition training set and use test set for validation.
 set.seed(12333)
 inTrain <- createDataPartition(wlTrainFinal$classe, p = 0.8, list = FALSE)
@@ -178,8 +178,21 @@ table(predValGBM)
 ##Results
 Our first model was Caret's rpart method which failed to produce any leafs representing Classes B and D as well as finishing with what would ultimately be the lowest accuracy (43%). Since we didn't anticipate significant improvement, we next evaluated the standalone rPart package and the results were significantly better with an accuracy of 71.6% and all classes represented. However, this model assigned zero importance to many variables, including most of the gyroscope features. Despite this, we were pleased with the improvements and were comfortable with the depth of the overall tree.
 
-```{r echo = FALSE, warnings = FALSE}
+```{r warnings = FALSE}
+# modFitRpart <- rpart(classe ~ ., data = training)
+load(file = "MLmodFitRpart.rda")
 fancyRpartPlot(modFitRpart)
+```
+
+The confusion matrix and predictions from this model are below. Note that predictions are for both the partitioned test set (3900 observations) and then the validation data (original 20 test observations).
+```{r}
+predRPart <- predict(modFitRpart, testing, type = "class")
+table(predRPart)
+confusionMatrix(predRPart, testing$classe)
+
+# Predict on validation
+predValRpart <- predict(modFitRpart, wlTestFinal, type = "class")
+table(predValRpart)
 ```
 
 We then began evaluating Random Forest models (which proved in the case of Caret to be computationally expensive and extremely time consuming). Both the Caret and standalone Random Forest models performed extremely well. In fact, their accuracies were identical at 99.6% and while their total misclassifications were identical (14 each), there were differences in which observations were misclassified (but both models erred the most with Classes C and D). Finally both models predicted the same results for our holdout validation set (the 20 original test observations).
@@ -191,6 +204,14 @@ table(predValGBM)
 
 Our final tests were designed to add cross validation to the entire training set with the "rpart" and "rf" methods of the Caret package. Cross validation improved the decision tree accuracy results (56.2%), but failed to place any observations in three of the five classes (B, D and E) and we rejected it. The cross validation with Caret's "rf" method actually outperformed the other two Random Forest models, though only slightly with an overall accuracy of 99.8%. This model, too, returned the same predictions against the validation set as the Random Forest and Gradient Boosted Models.
 
+The model fit for the cross validated Random Forest is presented below.
+
+```{r}
+# Train without partitioning
+# modFitRFCV <- train(classe ~ ., method = "rf", data = wlTrainFinal, trControl = trainControl(method = "cv", number = 5))
+load(file = "MLmodFitRFCV.rda")
+modFitRFCV
+```
 The overall results are graphically represented below:
 ```{r echo=FALSE, results="hide", message = FALSE}
 # Stage data and plot accuracy results
@@ -211,6 +232,14 @@ g <- ggplot(modelData, aes(x = rownames(modelData), y = Accuracy)) +
      geom_text(aes(label = Accuracy), vjust = 1.6, color = "blue", size = 5.5)
 g
 ## End Script
+```
+
+Our final predictions for this model were:
+```{r}
+# Predict on test
+predTestRFCV <- predict(modFitRFCV, wlTestFinal)
+predTestRFCV
+table(predTestRFCV)
 ```
 
 ##Assumptions, Uncertainty, and Conclusion
